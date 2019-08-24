@@ -1,0 +1,177 @@
+# coding: utf-8
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+os_version="ubuntu/xenial64"
+user_name="vagrant" #"ubuntu"
+
+node_num=1  #can we connect multi VMs for bigger cluster?
+
+# VM configs
+CPU_COUNT = 2
+RAM_SIZE = 2560  #2.5GB
+DISK_SIZE = '15GB' #servicefabric need >10GB
+
+#docker_version="" #use latest docker version
+#only use moby
+
+#local docker registry
+myhubip=ENV["K8SHUBIP"]
+myhubport=ENV["K8SHUBPORT"]
+
+#def masterIP(num)
+#  return "192.168.66.#{10+num}"
+#end
+
+def nodeIP(num)
+  return "192.168.66.#{20+num}"
+end
+
+#backup/cache deb pkgs and dok images for later reinstall
+cache="/vagrant/cache" #cache dir accessed inside VM
+deb_pkgs_dir="deb_pkgs"
+base_pkgs_dir="#{deb_pkgs_dir}/base"
+docker_pkgs_dir="#{deb_pkgs_dir}/docker"
+sfsdk_pkgs_dir="#{deb_pkgs_dir}/sfsdk"
+sfctl_pkgs_dir="#{deb_pkgs_dir}/sfctl"
+dok_images_dir="dok_images"
+
+dnsCfg = '
+        <Section Name=\\"DnsService\\">
+          <Parameter Name=\\"IsEnabled\\" Value=\\"true\\" />
+        </Section>
+   ' 
+
+$node_install_script = <<-SHELL01
+
+   #add service fabric repo
+   sh -c 'echo "deb [arch=amd64] https://apt-mo.trafficmanager.net/repos/servicefabric/ xenial main" > /etc/apt/sources.list.d/servicefabric.list'
+
+   #add dotnet repo
+   if [ ! -d #{cache}/#{deb_pkgs_dir} ]; then
+        mkdir -p #{cache}/#{deb_pkgs_dir}
+        wget -q -P #{cache}/#{deb_pkgs_dir} https://packages.microsoft.com/config/ubuntu/16.04/packages-microsoft-prod.deb
+   fi   
+   dpkg -i #{cache}/#{deb_pkgs_dir}/packages-microsoft-prod.deb
+
+   # GPG
+   curl -fsSL https://packages.microsoft.com/keys/msopentech.asc | apt-key add -
+   # add docker repo
+   curl -fsSL https://download.docker.com/linux/ubuntu/gpg | apt-key add -
+   add-apt-repository "deb [arch=amd64] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable"
+   #--- add azul jdk repo ---
+   # not work, miss info for zulu jdk
+   curl -fsSL https://repos.azul.com/azul-repo.key | apt-key add -
+   add-apt-repository 'deb http://repos.azulsystems.com/ubuntu stable main'
+   # something work
+   apt-key adv --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys 0xB1998361219BD9C9
+   apt-add-repository "deb http://repos.azul.com/azure-only/zulu/apt stable main"
+
+   apt-get -y update
+
+   #--- install sfsdk ---
+
+   echo "servicefabric servicefabric/accepted-eula-ga select true" | debconf-set-selections
+   echo "servicefabricsdkcommon servicefabricsdkcommon/accepted-eula-ga select true" | debconf-set-selections
+   
+   if [ ! -d #{cache}/#{sfsdk_pkgs_dir} ]; then
+        mkdir -p #{cache}/#{sfsdk_pkgs_dir}
+        apt-get -y -o Dir::Cache::Archives="#{cache}/#{sfsdk_pkgs_dir}" --download-only reinstall servicefabricsdkcommon
+   fi
+   apt-get -y -o Dir::Cache::Archives="#{cache}/#{sfsdk_pkgs_dir}" install servicefabricsdkcommon
+
+   #install sfctl
+   if [ ! -d #{cache}/#{sfctl_pkgs_dir} ]; then
+        mkdir -p #{cache}/#{sfctl_pkgs_dir}
+        apt-get -y -o Dir::Cache::Archives="#{cache}/#{sfctl_pkgs_dir}" --download-only reinstall python-pip
+        apt-get -y -o Dir::Cache::Archives="#{cache}/#{sfctl_pkgs_dir}" install python-pip
+        pip install sfctl
+        if [ -d /home/#{user_name}/.local ]; then
+           cp -fr /home/#{user_name}/.local #{cache}/#{sfctl_pkgs_dir}/dot_local
+        fi
+   else
+       apt-get -y -o Dir::Cache::Archives="#{cache}/#{sfctl_pkgs_dir}" install python-pip
+       if [ -d #{cache}/#{sfctl_pkgs_dir}/dot_local ]; then
+           cp -fr #{cache}/#{sfctl_pkgs_dir}/dot_local /home/#{user_name}/.local
+       fi
+   fi 
+
+   
+   #install moby
+   #--install docker/moby ---
+   if [ ! -d #{cache}/#{docker_pkgs_dir} ]; then
+        mkdir -p #{cache}/#{docker_pkgs_dir}
+        apt-get -y -o Dir::Cache::Archives="#{cache}/#{docker_pkgs_dir}" --download-only reinstall moby-engine moby-cli
+   fi
+   apt-get -y -o Dir::Cache::Archives="#{cache}/#{docker_pkgs_dir}" install moby-engine moby-cli
+   
+   
+   #--config docker daemon--
+   # do we need ipv6,cidr etc for sf?
+   #--set up docker private registry if exist
+   if [ -n "#{myhubip}" ]; then  #config local registry
+        echo "{ \\"ipv6\\": true, \\"fixed-cidr-v6\\": \\"fd00::/64\\", \\"insecure-registries\\" : [\\"#{myhubip}:#{myhubport}\\"] }" >> /etc/docker/daemon.json
+   else
+        echo "{ \\"ipv6\\": true, \\"fixed-cidr-v6\\": \\"fd00::/64\\" }" >> /etc/docker/daemon.json
+   fi
+   service docker restart 
+   usermod -aG docker #{user_name}
+
+   #--- enable DNS in local dev cluster ---
+
+   mv /opt/microsoft/sdk/servicefabric/common/clustersetup/nonsecure/servicefabric-scalemin.xml /tmp/
+   awk -vdnsCfg="#{dnsCfg}" '/<\\/FabricSettings>/{print dnsCfg;print;next}1' /tmp/servicefabric-scalemin.xml > /opt/microsoft/sdk/servicefabric/common/clustersetup/nonsecure/servicefabric-scalemin.xml
+   mv /opt/microsoft/sdk/servicefabric/common/clustersetup/nonsecure_mesh/servicefabric-scalemin.xml /tmp/
+   awk -vdnsCfg="#{dnsCfg}" '/<\\/FabricSettings>/{print dnsCfg;print;next}1' /tmp/servicefabric-scalemin.xml > /opt/microsoft/sdk/servicefabric/common/clustersetup/nonsecure_mesh/servicefabric-scalemin.xml
+
+   #--- setup node env var ----
+   echo "export PATH=$PATH:/home/#{user_name}/.local/bin" >>  /home/#{user_name}/.bashrc
+   echo "alias sfdata='cd /home/sfuser/sfdevcluster/data'" >> /home/#{user_name}/.bashrc
+   echo 'function devclustersetup() {
+        /vagrant/devclustersetup.sh
+   }'  >> /home/#{user_name}/.bashrc
+   echo 'function devclustercleanup() {
+        /vagrant/devclustercleanup.sh
+   }'  >> /home/#{user_name}/.bashrc
+   echo "alias sfctl-loc='sfctl cluster select --endpoint http://localhost:19080'" >> /home/#{user_name}/.bashrc
+
+   if [ -n "#{myhubip}" ]; then  #config local registry
+      echo "export MYHUBIP=#{myhubip}" >> /home/#{user_name}/.bashrc
+      echo "export MYHUBPORT=#{myhubport}" >> /home/#{user_name}/.bashrc
+      echo "export MYHUB=#{myhubip}:#{myhubport}" >> /home/#{user_name}/.bashrc
+   fi
+   cat /vagrant/dot_bashrc >> /home/#{user_name}/.bashrc
+
+SHELL01
+
+Vagrant.configure("2") do |config|
+  config.vm.box = os_version
+  config.disksize.size = DISK_SIZE
+  
+  (1..node_num).each do |i| 
+    config.vm.define vm_name="node%d" % i do |node|
+      node.vm.hostname = vm_name
+      nodeIP=nodeIP(i)
+      nodeIPRegx=nodeIP.gsub(/\./,"\.")
+
+      config.vm.provider "virtualbox" do |v|
+        v.memory = RAM_SIZE
+        v.cpus = CPU_COUNT
+      end
+      
+      node.vm.network "private_network", ip: nodeIP
+      (1..node_num).each do |j|
+        nodePeerIP=nodeIP(j)
+        node.vm.provision :shell, inline: "echo '#{nodePeerIP} node#{j}' >> /etc/hosts"
+      end
+      node.vm.provision "shell", inline: $node_install_script
+      node.trigger.after :up do |trigger|
+        trigger.run_remote = {path: "devclustersetup.sh"}
+        #trigger.info = "start browser at management port"
+        #trigger.run={inline: "/usr/bin/firefox http://192.168.66.21:19080"}
+      end
+    end
+  end
+  
+end
+

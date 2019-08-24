@@ -1,0 +1,45 @@
+export PS1="\h$ "
+
+# Workspaces inside VM
+export WS=/vagrant/Workspaces/Workspace
+export PATH=$PATH:/vagrant/Workspaces/bin
+alias ws='cd $WS'
+
+# settings for docker & k8s inside vm
+
+alias dok='docker'
+alias dokps='docker ps'
+alias dokpsa='docker ps -as' 
+alias dokpsaq='docker ps -aq'
+alias dokpss='docker ps --format "table {{.ID}}\t{{.Image}}\t{{.Names}}\t{{.Status}}"'
+alias dokpsp='docker ps --format "table {{.ID}}\t{{.Image}}\t{{.Names}}\t{{.Ports}}\t{{.Status}}"'
+alias dokpsas='dokpsa --format "table {{.Image}}\\t{{.Names}}\\t{{.Status}}\\t{{.Size}}"'
+#alias dokpsaf='dokpsa --format {{.Image}}\\t{{.Names}}\\t{{.Port}}\\t{{.Status}}\\t{{.Ports}}'
+
+alias doki='docker images'
+alias dokrm='docker rm'
+alias doksta='docker start'
+alias doksto='docker stop'
+alias dokatt='docker attach'
+alias dokrmi='docker rmi'
+alias dokexc='docker exec -it'
+alias doktop='docker top'
+alias doklog='docker logs '
+alias dokloga='docker logs --tail all '
+alias dokrmuntag='docker rmi $(docker images | grep "^<none>" | awk "{print $3}")'
+
+alias doknet='docker network'
+
+alias dokvol='docker volume'
+
+alias doksys='docker system'
+
+alias dokis='doki --format "table {{.Repository}}:{{.Tag}}\t{{.ID}}\t{{.Size}}"'
+#docker compose
+alias dokcop='docker-compose'
+
+alias myhubi='curl $MYHUB/v2/_catalog'
+alias reg='reg -r http://$MYHUB -k -f '
+alias regi='reg -r http://$MYHUB -k -f ls'
+alias regrmi='reg -r http://$MYHUB -k -f rm'
+
